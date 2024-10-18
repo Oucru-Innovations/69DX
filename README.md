@@ -8,6 +8,7 @@ Trinh Dong, 2024
 # Prerequisites
 
 RStudio >= 2024.04
+
 R >= 4.4.0
  
 # How to run
