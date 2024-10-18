@@ -5,13 +5,13 @@ This repository contains Rscript for the descriptive analysis for Dengue severit
 Trinh Dong, 2024
 
 
-# Prerequisites
+## Prerequisites
 
 RStudio >= 2024.04
 
 R >= 4.4.0
  
-# How to run
+## How to run
 
 > [!WARNING]  
 > This code is tailored for RStudio. It is required to change the code to run in other environment/IDE. See below for instructions.
@@ -50,7 +50,7 @@ setwd('analysis')
 
 and run 1, 2 again.
 
- # Project tree
+ ## Project tree
  
 - 69DX.Rmd: report generation file, requiring data generated for 02_create_VAD.R
 - analysis/: analysis code
