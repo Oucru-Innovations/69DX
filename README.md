@@ -1,6 +1,7 @@
 # HTD Dengue Severity Profile (69DX)
 
 This repository contains Rscript for the descriptive analysis for Dengue severity profile
+
 Trinh Dong, 2024
 
 
@@ -24,6 +25,26 @@ mkdir('data/raw')
 install.package('renv')
 renv::restore()
 ```
+
+Given all dataset in data/raw, to generate report, open in Rstudio `69DX.Rproject`
+
+1. Open `analysis/01_import.R`, click on `Source`
+2. Open `analysis/02_create_VAR.R`, click on `Source`
+3. Open `69DX.Rmd`, click on `Knit`
+
+In case of failure in 1 or 2 (or not Rstudio), comment out this line
+
+```r
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+in both files, then change the working directory to analysis
+
+```r
+setwd('analysis')
+```
+
+and run 1, 2 again.
 
  # Project tree
  
