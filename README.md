@@ -12,6 +12,9 @@ R >= 4.4.0
  
 # How to run
 
+[!WARNING]  
+This code is tailored for RStudio. It is required to change the code to run in other environment/IDE. See below for instructions.
+
 You have to create a directory data/raw/ and input your raw data inside.
 Additionally: data/raw/BirthDataFix.xlsx contains fixed age demographic info.
 
