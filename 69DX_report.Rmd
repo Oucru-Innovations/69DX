@@ -1,0 +1,1025 @@
+---
+title: "SEVERE DENGUE IN VIETNAM: A retrospective observational study from DENGUE outbreak in Ho Chi Minh City"
+date: "`r Sys.Date()`"
+author: Trinh Dong Huu Khanh
+output:
+  officedown::rdocx_document
+---
+
+```{r setup}
+#| echo: false
+#| include: false
+
+library(gtsummary)
+library(tidytable)
+library(flextable)
+library(glue)
+library(ggplot2)
+library(ComplexUpset)
+theme_gtsummary_journal("nejm")
+theme_gtsummary_compact(font_size = 11)
+knitr::opts_chunk$set(dev='png', dpi=600, echo=F, warning=F, message=F)
+
+footnote <- list(all_stat_cols() ~
+                   "N = number of patients with non-missing data included in that statistic (the denominator).
+      Summary statistic = median (1st, 3rd quartile) for numeric data, and the number and frequency (%) of patients with the characteristic for categorical data.")
+
+load('data/vad/69DX_vad.RData')
+get_month_from_code <- function(code){
+  strsplit(code, '-') |>
+    sapply('[[', 2) |>
+    as.integer()
+}
+bsl_demo <- bsl_demo |>
+  mutate(month_start = 
+           factor(months(date_start, abbreviate=TRUE),
+                  levels = month.abb, ordered = TRUE),
+         month_admit = 
+           factor(months(date_admit, abbreviate=TRUE),
+                  levels = month.abb, ordered = TRUE),
+         month_enrol = 
+           factor(months(date_enrol, abbreviate=TRUE),
+                  levels = month.abb, ordered = TRUE),
+         month_code = get_month_from_code(usubjid)
+         ) |>
+  mutate(pop = month_code <= 12 & month_code >= 6 & 
+           age_exact >= 16 & 
+           day_sick <= 7 & 
+           usubjid != "003-08-1-012")
+
+pop <- bsl_demo |> filter(pop) |> select(usubjid,pop)
+```
+
+# Dengue profile from June to December 2022
+
+```{r bsl-case}
+#| fig-width: 7
+#| fig-asp: .75
+#| out-width: 70%
+#| fig-cap: Number of Dengue cases admitted to HTD from June to December 2022
+
+
+bsl_case <- bsl_demo |>
+  right_join(pop) |>
+  select(usubjid, month_start, month_admit, starts_with('diag')) |>
+  mutate(diag_bleed = !diag_bleed %in% "No haemorrhage",
+         diag_shock = !diag_shock %in% "No shock") |>
+  mutate(
+    month_admit = ifelse(is.na(month_admit), month_start, month_admit),
+    diag_any = TRUE, 
+    diag_severe = diag_multi > 0 | diag_shock | diag_bleed,
+  ) |>
+  select(usubjid, month_admit, diag_any, diag_severe) |>
+  group_by(month_admit) |>
+  summarise(
+    across(starts_with('diag_'), 
+                  function(x) {
+                    sum(x,na.rm=TRUE)
+                  })
+  ) |>
+  pivot_longer(-month_admit,
+               names_to = 'Type',
+               values_to = 'n_case',
+               names_prefix = 'diag_'
+               ) |>
+  mutate(Type=case_match(Type, 'severe' ~ 'Severe cases', 'any' ~ 'Total cases')) |>
+  # filter(as.character(Type) %in% c('any')) |>
+  ungroup()
+  
+ggplot(bsl_case) + 
+  geom_line(aes(x=as.numeric(month_admit), y=n_case, color=Type)) + 
+  scale_x_continuous(name='Month/2022', 
+                     breaks=6:12,
+                     labels=month.abb[6:12]) +
+  scale_y_continuous(name='Number of cases') +
+  ggsci::scale_color_bmj() +
+  theme_bw() + 
+  theme(legend.title = element_blank(),
+        legend.position = 'top')
+
+```
+
+
+\newpage
+
+## Participant characteristics
+
+
+```{r bsl_demo}
+#| tab.id: bsl_demo
+
+bsl <- bsl_demo |>
+  right_join(pop) |>
+  select(usubjid, sex, age, day_sick, nday_icu, nday_hos) |>
+  left_join(pre_admit |> select(usubjid, pretreat, day_pretreat)) |>
+  left_join(bsl_clin |> select(usubjid, bmi)) |>
+  left_join(comorbid |> select(usubjid, past_denv, cm_any, pregnant, postpartum)) |>
+  left_join(
+    list(pre_lab, fu_lab) |>
+      lapply(select, usubjid, ns1, igm) |>
+      do.call(rbind, args=_) |>
+      summarise(across(c(ns1, igm), any, na.rm=TRUE), .by=usubjid)
+  ) |>
+  mutate(across(c(ns1, igm), replace_na, FALSE)) |>
+  left_join(
+    dis_outc |>
+      select(usubjid, 
+             outc_canola, outc_hfnc, outc_niv, outc_machine,
+             outc2_healthy, outc2_death, outc2_sequelae, outc2_transfer)
+   )
+
+bsl |>
+  select(sex, age, day_sick, pretreat, 
+         # pretreat_htd, 
+         day_pretreat, 
+         bmi, past_denv, cm_any, pregnant, postpartum, 
+         ns1, igm, nday_icu, nday_hos,
+         starts_with('outc')) |>
+  mutate(
+    bmi = ifelse(bmi < 25, '<25', '≥ 25'),
+    across(c(pregnant, postpartum), ~ ifelse(sex=='Male', NA, .x)),
+    # pretreat = case_when(
+    #   pretreat & !pretreat_htd ~ 'Sent from another health care centre',
+    #    pretreat & pretreat_htd ~ 'In-hospital transfer',
+    #   !pretreat ~ 'Direct admission'
+    # ),
+    # pretreat_htd = NULL,
+    outc2_transfer = outc2_transfer != 'Not transferred',
+    outc2_sequelae = outc2_sequelae != 'No sequelae'
+  ) |>
+  tbl_summary(
+    label = list(
+      day_sick ~ 'Days of illness at enrolment',
+      sex ~ 'Gender',
+      age ~ 'Age [years]',
+      pretreat ~ 'History before ICU admission',
+      day_pretreat ~ 'Time spent at the initial health centre [days]',
+      past_denv ~ 'Past history of Dengue',
+      cm_any ~ 'Any Comorbidity',
+      pregnant ~ 'Pregnancy (over Total female)',
+      bmi ~ 'BMI',
+      ns1 ~ 'Confirmed by positive NS1',
+      igm ~ 'Confirmed by positive DenV IgM',
+      postpartum  ~ 'Postpartum',
+      nday_icu ~ 'Length of stay in ICU [days]',
+      nday_hos ~ 'Length of stay in hospital [days]',
+      outc_canola ~ '- Nasal',
+      outc_hfnc ~ '- HFNC',
+      outc_niv ~ '- NIV',
+      outc_machine ~ '- Mechanical ventilation',
+      outc2_healthy ~ '- Good recovery',
+      outc2_death ~ '- Death',
+      outc2_transfer ~ '- Transfer to another hospital',
+      outc2_sequelae ~ '- Recover with sequelae'
+    ),
+    type  = list(day_sick ~ 'continuous'),
+    digits = list(all_categorical()~ c(0,1),
+                  c(day_sick, nday_hos) ~ c(0, 0, 0)),
+    missing = 'no',
+     statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  add_n('{N_nonmiss}') |>
+  modify_table_body(
+    function(x){
+      j = which(x$label == '- Nasal') - 1
+      i =  which(x$label == '- Good recovery') - 1
+      rbind(x[1:j,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('Oxygen support',2), rep('', ncol(x)-5)),
+            x[(j+1):i,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('Discharge status',2), rep('', ncol(x)-5)),
+            x[(i+1):nrow(x),])
+    }
+  )  |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Demographical characteristics (N = {nrow(bsl)})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  autofit()
+```
+
+\newpage
+
+## Progression of the disease
+
+```{r progress}
+#| tab.id: progress
+
+# bsl_dx2 <-
+#   bsl_demo |>
+#   filter(pop) |>
+#   select(usubjid, starts_with('diag')) |>
+#   mutate(across(c(diag_bleed, diag_liver), ~ !.x %in% 'No')) |>
+#   mutate(across(starts_with('diag_') & !diag_multi,
+#                 ~ ifelse(diag_multi > 1, FALSE, .x))) |>
+#   mutate(diag_multi=diag_multi>1)
+
+bsl_dx <-
+  bsl_demo |>
+  right_join(pop) |>
+  select(usubjid, starts_with('diag')) |>
+  mutate(t='Admission') |>
+  mutate(
+    across(c(diag_shock:diag_kidney), ~ gsub('^No', NA_character_, .x))) |>
+  rename_with(~paste0(.x, '_type'), c(diag_shock:diag_kidney)) |>
+  mutate(diag_hemorrhage = !is.na(diag_bleed_type),
+         diag_shock = !is.na(diag_shock_type),
+         diag_liver = !is.na(diag_liver_type),
+         diag_kidney = !is.na(diag_kidney_type)
+  ) |>
+  select(-diag_bleed_type) |>
+  mutate(
+    diag_shock_reshock = diag_shock_type == 'DSS + Reshock',
+    diag_shock_noreshock = diag_shock_type == 'DSS + No reshock',
+    diag_liver_cirrhosis = diag_liver_type == 'Acute liver failure',
+    diag_liver_nocirrhosis = diag_liver_type == 'Damage + No ALF',
+    diag_kidney_aki = diag_kidney_type == 'Acute renal failure',
+    diag_kidney_noaki = diag_kidney_type == 'Damaged without ARF'
+  ) |>
+  select(!ends_with('_type')) |>
+  mutate(diag_nosevere = !diag_shock & !diag_hemorrhage & diag_multi==0) |>
+  mutate(diag_warning = ifelse(diag_nosevere, diag_warning, NA),
+         diag_nowarning = ifelse(diag_nosevere, !diag_warning, NA))
+  
+
+
+dis_dx <-
+  dis_diag |>
+  right_join(pop) |>
+  select(-pop) |>
+  rename_with(~ gsub('type_', 'diag_', .x),.cols = everything()) |>
+  mutate(
+    diag_shock_noreshock = ifelse(!diag_shock, NA, !diag_shock_reshock),
+    diag_liver_nocirrhosis = ifelse(!diag_liver, NA, !diag_liver_cirrhosis),
+    diag_kidney_noaki = ifelse(!diag_kidney, NA, !diag_kidney_aki),
+    diag_warning = NA,
+    diag_nowarning = NA,
+    diag_nosevere = F,
+    t='Discharge'
+  ) 
+  # transmute(usubjid = usubjid, 
+  #        diag_shock_type = case_when(
+  #          type_shock_reshock ~  'DSS + Reshock',
+  #          type_shock ~  'DSS + No reshock',
+  #          .default = NA_character_),
+  #        diag_bleed = ifelse(type_hemorrhage!='No haemorrhage', TRUE, FALSE),
+  #        diag_liver_type = case_when(
+  #          type_liver_cirrhosis ~ 'Acute liver failure',
+  #          type_liver ~ 'Damage + No ALF',
+  #          .default = NA_character_
+  #        ),
+  #        diag_kidney_type = case_when(
+  #          type_kidney_aki ~ 'Acute renal failure',
+  #          type_kidney ~ 'Damaged without ARF',
+  #          .default = NA_character_
+  #        ),
+  #        diag_heart = type_heart,
+  #        diag_brain = type_brain,
+  #        diag_multi = type_multi > 1,
+  #        diag_warning = FALSE,
+  #       t = 'Discharge'
+  # ) 
+
+
+all_dx <-
+  rbind(bsl_dx, dis_dx) |>
+  select(
+    diag_nosevere,
+    diag_warning,
+    diag_nowarning,
+    starts_with('diag_shock'),
+    starts_with('diag_hemorrhage'),
+    starts_with('diag_liver'),
+    starts_with('diag_kidney'),
+    diag_heart, diag_brain, diag_multi, t
+  ) |>
+  mutate(diag_multi = diag_multi>1)
+  # mutate(
+  #   diag_liver=is.na(diag_liver_type),
+  #   diag_kidney=is.na(diag_kidney_type),
+  #   diag_shock=is.na(diag_shock_type)
+  # ) |>
+  # relocate(diag_liver, .before=diag_liver_type)
+         
+
+bsl_summary <- all_dx |>
+  filter(t=='Admission') |>
+   select(-t, -diag_nosevere) |>
+  select(diag_nowarning, everything()) |>
+  # mutate(diag_bleed = diag_bleed != 'No haemorrhage') |> 
+  # select(diag_warning, diag_shock, diag_bleed, everything()) |>
+  # select(- usubjid) |>
+  tbl_summary(
+    label = list(
+      # diag_nosevere ~ 'Non-severe',
+      diag_nowarning ~ 'Non-severe',
+      diag_warning ~ 'With warning signs',
+      diag_hemorrhage ~ 'Haemorrhage',
+      diag_shock ~ 'Dengue Shock Syndrome',
+      diag_heart ~ 'Heart damage',
+      diag_liver ~ 'Liver damage',
+      diag_kidney ~ 'Renal damage',
+      diag_brain ~ 'Brain damage',
+      diag_multi ~ 'Multi organs damage',
+      diag_shock_reshock ~ '- DSS + Reshock',
+      diag_shock_noreshock ~ '- DSS + No reshock',
+      diag_liver_nocirrhosis ~ '- No cirrhosis',
+      diag_liver_cirrhosis ~ '- Cirrhosis',
+      diag_kidney_aki ~ '- Acute renal failure',
+      diag_kidney_noaki ~ '- No renal failure'
+    ),
+     missing = 'no',
+     statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  # add_stat(fns=everything() ~ \(...) nrow(bsl_dx)) |>
+  add_n() |>
+  modify_header(stat_0 ~ 'N cases') |>
+  # modify_header(add_stat_1 ~ '**N**') |>
+  modify_caption(glue::glue('Progression of the disease')) |>
+  # modify_table_body( \(x) dplyr::relocate(x, add_stat_1, .before=stat_1)) |>
+  modify_footnote(
+    !!!footnote
+  ) 
+
+
+dis_summary <- all_dx |>
+  filter(t=='Discharge') |>
+  select(-t,-diag_nosevere, -diag_warning, -diag_nowarning) |>
+  # mutate(diag_bleed = diag_bleed != 'No haemorrhage') |> 
+  # select(diag_warning, diag_shock, diag_bleed, everything()) |>
+  # select(- usubjid) |>
+  tbl_summary(
+    label = list(
+      # diag_nosevere ~ 'Non-severe',
+      # diag_nowarning ~ 'Non-severe',
+      # diag_warning ~ '- With warning signs',
+      diag_hemorrhage ~ 'Haemorrhage',
+      diag_shock ~ 'Dengue Shock Syndrome',
+      diag_heart ~ 'Heart damage',
+      diag_liver ~ 'Liver damage',
+      diag_kidney ~ 'Renal damage',
+      diag_brain ~ 'Brain damage',
+      diag_multi ~ 'Multi organs damage',
+      diag_shock_reshock ~ '- DSS + Reshock',
+      diag_shock_noreshock ~ '- DSS + No reshock',
+      diag_liver_nocirrhosis ~ '- No cirrhosis',
+      diag_liver_cirrhosis ~ '- Cirrhosis',
+      diag_kidney_aki ~ '- Acute renal failure',
+      diag_kidney_noaki ~ '- No renal failure'
+    ),
+     missing = 'no',
+     statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  # add_stat(fns=everything() ~ \(...) nrow(bsl_dx)) |>
+  add_n() |>
+  modify_header(stat_0 ~ 'N cases') |>
+  # modify_header(add_stat_1 ~ '**N**') |>
+  modify_caption(glue::glue('Progression of the disease')) |>
+  # modify_table_body( \(x) dplyr::relocate(x, add_stat_1, .before=stat_1)) |>
+  modify_footnote(
+    !!!footnote
+  ) 
+
+tbl_merge(list(bsl_summary, dis_summary),
+         tab_spanner = c('**Admission**', '**Discharge**')) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  autofit()
+```
+
+
+```{r sankey}
+#| fig-width: 8
+#| fig-asp: 1.1
+#| out-width: 70%
+#| fig-cap: Distribution of Dengue phenotypes at admission and discharge 
+#| eval: false 
+
+bsl_dx2 <-
+  bsl_dx |>
+  mutate(
+    across(starts_with('diag_') & where(is.character), ~ !grepl('^No', .x, perl=TRUE))) %>%
+  mutate(diag_multi = rowSums(select(., starts_with('diag_') & !diag_multi)) > 1) |>
+  mutate(across(starts_with('diag_') & !diag_multi,
+                ~ ifelse(diag_multi, FALSE, .x))) 
+
+bsl_dx2$diag_type <- apply(bsl_dx2 |> select(starts_with('diag_')),1, function(x) names(x)[match(TRUE, x)]) |> unlist() |> replace_na('diag_non-severe')
+
+dis_dx2 <- 
+  dis_dx |>
+  mutate(
+    across(starts_with('diag_') & where(is.character), ~ !grepl('^No', .x, perl=TRUE))) %>%
+  mutate(diag_multi = rowSums(select(., starts_with('diag_') & !diag_multi)) > 1) |>
+  mutate(across(starts_with('diag_') & !diag_multi,
+                ~ ifelse(diag_multi, FALSE, .x))) 
+
+dis_dx2$diag_type2 <- apply(dis_dx2 |> select(starts_with('diag_')),1, function(x) names(x)[match(TRUE, x)]) |> unlist() |> replace_na('diag_non-severe')
+
+dt <- left_join(
+  select(bsl_dx2, usubjid, diag_type),
+  select(dis_dx2, usubjid, diag_type2)
+) |>
+  select(-usubjid) |>
+  mutate(across(.fns=
+                  ~ factor(.x, 
+                         levels = c('diag_non-severe',
+                                    'diag_warning',
+                                    'diag_shock',
+                                    'diag_bleed',
+                                    'diag_liver',
+                                    'diag_kidney',
+                                    'diag_heart',
+                                    'diag_brain',
+                                    'diag_multi'),
+                         labels = c('Non-severe\nwithout warning signs',
+                                    'Non-severe\nwith warning signs',
+                                    'Only shock',
+                                    'Only haemorrhage',
+                                    'Only liver damage',
+                                    'Only renal damage',
+                                    'Only heart damage',
+                                    'Only neurological damage',
+                                    '> 1 types\n(including shock and haemorrhage)'
+                                    )))) 
+
+dt3 <- dt |>
+  group_by(diag_type2, diag_type) |>
+  count() |>
+  ggalluvial::to_lodes_form(key='Time', axes = 1:2)|>
+  mutate(Time = factor(Time, levels = c('diag_type', 'diag_type2'), labels =c('Admission', 'Discharge'))) |>
+  rename(Phenotype=stratum)
+
+
+ggplot(dt3, aes(x=Time, y=n, stratum=Phenotype, alluvium=alluvium, color=Phenotype,
+                 fill=Phenotype, label=n)) + 
+  ggalluvial::geom_flow() +
+  ggalluvial::geom_stratum() + 
+  scale_x_discrete(expand=c(0,0)) +
+  theme_minimal() + 
+  ylab('Number of cases') +
+  ggsci::scale_color_nejm() + ggsci::scale_fill_nejm() +
+  theme(legend.position = 'bottom',
+        legend.title = element_blank(),
+        )
+```
+
+
+```{r cov}
+#| fig-width: 8
+#| fig-asp: 0.85
+#| out-width: 70%
+#| fig-cap: Distribution of Dengue phenotypes at admission and discharge
+#| eval: false 
+
+dt |>
+  group_by(diag_type2, diag_type) |>
+  count() |>
+  arrange(diag_type, diag_type2) |>
+  ggplot(aes(x=diag_type2, y=diag_type, fill=n)) +
+  # scale_x_discrete(drop=FALSE) + 
+  geom_tile() +
+  geom_text(aes(label=n, color=n)) +
+  scale_color_gradient(low='black', high='white', guide='none') +
+  labs(y='Admission', x='Discharge') + 
+  ggplot2::theme_classic() + 
+  scale_fill_distiller(name='Cases', palette='Reds', trans='log10', direction=1) +
+  
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+```
+
+```{r upset}
+#| fig-width: 8
+#| fig-asp: 1
+#| out-width: 70%
+#| eval: false
+
+full_dx <- 
+  rbind(select(bsl_dx, usubjid, starts_with('diag_')) |> 
+              mutate(across(where(is.character) & !usubjid,
+                     ~ !grepl("^No ", .x) | grepl('DSS', .x)))%>%
+             mutate(., diag_none = rowSums(select(., starts_with('diag_'))) == 0) |>
+             mutate(time='Admission') ,
+           select(dis_dx, usubjid, starts_with('diag_')) |> 
+             mutate(across(where(is.character) & !usubjid,
+                    ~ !grepl("^No ", .x) | grepl('DSS', .x))) |>
+             mutate(diag_none = F) |>
+             mutate(time='Discharge')
+  ) |>
+  select(-usubjid, -diag_multi) |>
+  rename_with(~ gsub('diag_', '', .x) |> stringr::str_to_title()) |>
+  rename(`Warning signs`='Warning',
+         Haemorrhage = 'Bleed',
+         'Non-severe' = 'None')
+
+updt = upset_data(
+  full_dx,
+  intersect = colnames(full_dx |> select(-Time)),
+  sort_intersections = c('ascending'), 
+  group_by='degree',
+  sort_intersections_by=c('ratio')
+)
+
+ComplexUpset::upset(
+  full_dx,
+  intersect = colnames(full_dx |> select(-Time)),
+  name = 'Severe type combination',
+  base_annotations=list(
+    'Intersection size'=intersection_size(
+      counts=FALSE,
+      text_colors=c(
+        on_background='#000', on_bar='#000'
+      ),
+      bar_number_threshold = .55,
+      # mapping=aes(fill=Time),
+      position = position_dodge(preserve = "single")
+    ) + ggsci::scale_fill_nejm() + 
+      ylab('Number of cases')  + 
+      theme(legend.position = c(1, 1), legend.justification = c(1,1), legend.background = element_rect(fill='#fff', color='#000'))
+  ),
+  set_sizes = upset_set_size() + xlab('Case'),
+  sort_intersections = c('ascending'), 
+  group_by='degree',
+  sort_intersections_by=c('ratio', 'degree'),
+  height_ratio = 0.2,
+  width_ratio=0.3) 
+```
+
+```{r upset-2}
+#| fig-width: 9
+#| fig-asp: 0.75
+#| fig-cap: Upset plot of severe Dengue types at discharge
+upset_diag <-dis_diag |>
+  inner_join(bsl[, .(usubjid)]) |>
+  select(type_shock, type_hemorrhage:type_liver,
+         type_kidney, type_heart, type_brain) |>
+  select(starts_with('type_')) |>
+  rename_with(~ snakecase::to_title_case(gsub('type_', '', .x)))|>
+  mutate(across(.fn=as.integer))
+
+upset_data <- ComplexUpset::upset_data(
+   intersect = colnames(upset_diag),
+  upset_diag
+)$with_sizes |> select(intersection, exclusive_intersection_size) |>
+  as_tibble() |>
+  unique() |>
+  mutate(intersection2 = strsplit(intersection, '-')) |>
+  mutate(degree = sapply(intersection2, length)) |>
+  arrange(degree, desc(exclusive_intersection_size)) 
+
+pal <- ggsci::pal_nejm()(6)
+
+ComplexUpset::upset(
+  upset_diag,
+  intersect = colnames(upset_diag),
+  intersections = upset_data$intersection2,
+  base_annotations=list(
+    'Number of cases in combination'=intersection_size(
+      counts=TRUE,
+      bar_number_threshold = 1,
+    )),
+  name = 'Severe type combination',
+  set_sizes = upset_set_size() + ylab('Number of cases in type'),
+  # group_by='degree',
+  sort_intersections =FALSE,
+  # sort_intersections_by=c('degree','ratio'),
+  height_ratio = 0.2,
+  queries = list(
+    ComplexUpset::upset_query(set='Shock',      fill=pal[[1]], color=pal[[1]]),
+    ComplexUpset::upset_query(set='Liver',      fill=pal[[2]], color=pal[[2]]),
+    ComplexUpset::upset_query(set='Hemorrhage', fill=pal[[3]], color=pal[[3]]),
+    ComplexUpset::upset_query(set='Kidney',     fill=pal[[4]], color=pal[[4]]),
+    ComplexUpset::upset_query(set='Heart',      fill=pal[[5]], color=pal[[5]]),
+    ComplexUpset::upset_query(set='Brain',      fill=pal[[6]], color=pal[[6]])
+  ),
+  width_ratio=0.3,
+  matrix = ComplexUpset::intersection_matrix(
+    outline_color = list(active = "transparent", inactive = "grey70")
+  ))
+    # matrix = ComplexUpset::intersection_matrix(
+    #   geom=geom_point(size=3, shape=21, aes(fill=group, alpha=value)),
+    #   segment=geom_segment(color='grey70'),
+    #   outline_color = list(active = "transparent", inactive = "grey70")) + guides(fill=guide_none(), alpha=guide_none())) -> bb
+  
+  
+  # UpSetR::upset(nsets=100, 
+  #               mainbar.y.label = '',
+  #               order.by = c('freq','degree'),
+  #               decreasing = c(T, F),
+  #               mb.ratio = c(0.8, 0.2),
+  #               group.by = 'degree',
+  #               sets.x.label = 'Number of cases in type')
+```
+\newpage
+
+# Comorbidities
+
+
+```{r tab-bsl-morbid}
+#| tab.id: tab-bsl-morbid
+bsl_morbid <- comorbid |> right_join(pop) |>
+  select(starts_with('cm_')) |> mutate(across(.fns = ~ replace_na(.x, FALSE)))
+bsl_morbid_long <- 
+  bsl_morbid |>
+  select(-cm_other, -cm_any, -cm_ld) |>
+  pivot_longer(names_to = 'Comorbidity', values_to = 'Yes') 
+
+morbid_lv <- 
+  bsl_morbid_long |>
+  filter(Yes) |>
+  pull(Comorbidity) |>
+  forcats::fct_infreq() |>
+  forcats::fct_lump_n(n=10) |>
+  levels()
+
+bsl_morbid <-
+  bsl_morbid %>%
+  mutate(., cm_multi = rowSums(.)) %>%
+  mutate(., cm_other2 = rowSums(select(., !matches(morbid_lv), -cm_other, -cm_multi)))
+  
+
+bsl_morbid |>
+  mutate(cm_other = cm_other | (cm_other2 > 0),
+         cm_multi = cm_multi > 1,
+         # cm_multi = ifelse(cm_multi<2, NA_integer_, cm_multi)
+  ) |>
+  select(cm_multi, !!!morbid_lv[morbid_lv!='Other'], -cm_other) |>
+  # select(cm_kidney_disease:cm_immusuppression, cm_other, cm_multi) |>
+  # select(-cm_immusuppression) |>
+  tbl_summary(
+    label = list(
+      cm_cardio_disease ~ 'Myocardiovascular disease',
+      cm_highpress ~ 'Hypertension',
+      cm_diabetes ~ 'Diabetes mellitus',
+      cm_liver_disease ~ 'Liver disease',
+      cm_su ~ 'Peptic ulcer',
+      cm_covid ~ 'COVID-19',
+      cm_kidney_disease ~ 'Kidney disease of any stage',
+      cm_anemia_thalassemia ~ 'Anemia or Thalassemia',
+      cm_pulmonary_disease ~ 'Any pulmonary disease',
+      cm_cancer ~ 'Cancer of any type',
+      cm_antiinflame ~ 'Anti-inflammation drug',
+      
+      # cm_immusuppression ~ 'HIV/AIDS or using immuno-suppressant',
+      # cm_other ~ 'Any other comorbidity',
+      cm_multi ~ 'Any comorbidity'
+    ),
+    missing='no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  add_n('{N_nonmiss}') |>
+  modify_header(label = '**Comorbidity**', stat_0 = '**N cases (%)**') |>
+  modify_caption(glue::glue('Ten most common comorbidities')) |>
+  modify_footnote(
+   update = list(all_stat_cols() ~
+                   "N = number of patients with non-missing data included in that statistic.
+      Summary statistic = number of patient (%) with the comorbidity.")
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  autofit()
+```
+
+```{r upset-comod}
+#| fig-width: 7
+#| fig-asp: .75
+#| fig-cap: Upset plot of comorbidities, limited to 10 most common conditions
+bsl_morbid |>
+  select(-cm_multi, -cm_other2, -cm_other, -cm_any, -cm_ld, ) |>
+  rename(
+    'Kidney disease'          = cm_kidney_disease,
+    'Anemia/Thalassemia'      = cm_anemia_thalassemia,
+    'Myocardial disorder'     = cm_cardio_disease,
+    'Pulmonary disease'       = cm_pulmonary_disease,
+    'Liver disease'           = cm_liver_disease,  
+    'Diabetes'                = cm_diabetes, 
+    'Cancer'                  = cm_cancer,
+    'Immuno-deficit'          = cm_immusuppression,
+    'COVID-19'                = cm_covid,
+    # 'Liver diseases'          = cm_ld,
+    'Anti-inflammation drug' = cm_antiinflame,
+    'Peptic ulcer'            = cm_su,
+    'Hypertension'            = cm_highpress
+  ) |>
+  mutate(across(.fns = as.integer)) |>
+  UpSetR::upset(nsets=10, 
+                mainbar.y.label = '',
+                order.by = c('freq'),
+                mb.ratio = c(0.7, 0.3),
+                sets.x.label = 'Number of cases')
+```
+
+\newpage
+
+# Dengue shock cases
+
+```{r shock}
+#| tab.id: shock
+
+shock |>
+  unique() |>
+  inner_join(pop) |>
+  select(n_reshock, bld_hct_max, bld_plt,
+         starts_with('eff_'),
+         tx_colloids, tx_albumin, tx_vaso,
+         tx_canola, tx_hfnc, tx_niv, tx_machine) |>
+  mutate(has_reshock = !is.na(n_reshock)) |>
+  relocate(has_reshock, .before=n_reshock) |>
+  tbl_summary(
+    label = list(
+      has_reshock ~ 'Has reshock',
+      n_reshock ~ 'Number of reshock episodes',
+      bld_hct_max ~ 'Haematocrit (max)',
+      bld_plt ~ 'Platelet (min)',
+      eff_cardio ~ 'Pericardial effusion',
+      eff_pleuro ~ 'Pleural effusion',
+      eff_perito ~ 'Ascites',
+      tx_colloids ~ 'Colloid',
+      tx_albumin ~ 'Albumin',
+      tx_vaso ~ 'Vasopressor',
+      tx_canola ~ 'Canola',
+      tx_hfnc ~ 'HFNC',
+      tx_niv ~ 'NIV',
+      tx_machine ~ 'Mechanical ventilation'
+    ),
+    missing='no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  add_n('{N_nonmiss}') |>
+  modify_table_body(
+    function(x){
+      i =  which(x$label == 'Pericardial effusion') - 1
+      j =  which(x$label == 'Colloid') - 1
+      k =  which(x$label == 'Canola') - 1
+      rbind(x[1:i,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Fluid leakage through ultrasound**',2), rep('', ncol(x)-5)),
+            x[(i+1):j,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Shock treatment**',2), rep('', ncol(x)-5)),
+            x[(j+1):k,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Oxygen support**',2), rep('', ncol(x)-5)),
+            x[(k+1):nrow(x),])
+    }
+  )  |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Dengue cases with Shock syndrome (N = {nrow(shock |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+
+```
+
+\newpage
+# Haemorrhage
+
+```{r bleed}
+#| tab.id: bleed
+
+bleeding |>
+  unique() |>
+  inner_join(pop) |>
+  mutate(across(c(tx_packed_rbc,tx_cryoprecipitate,tx_platelet,tx_fresh_frozen_plasma), ~.x > 0))  %>%
+  mutate(.,
+         site_multi = rowSums(select(., starts_with('site_'))) > 1) |>
+  select(starts_with('site_'),
+         bld_hct_min, bld_plt,
+         bld_fibrinogen, bld_tqinr,
+         starts_with('tx_')) |>
+  tbl_summary(
+    label = list(
+      site_nose ~ '\\- Nose',
+      site_mouth ~ '\\- Mouth',
+      site_digest_tract ~ '\\- Digestive tract',
+      site_inject_site ~ '\\- Injection site',
+      site_urinary_tract ~ '\\- Urinary tract',
+      site_vaginal ~ '\\- Vagina',
+      site_brain ~ '\\- Brain',
+      site_other ~ '\\- Other',
+      site_multi ~ '\\- More than 1 site',
+      
+      bld_hct_min ~ 'Haematocrit (min)',
+      bld_plt ~ 'Platelet (min)',
+      bld_fibrinogen ~ 'Fibrinogen (min)',
+      bld_tqinr ~ 'INR (max)',
+      
+      tx_packed_rbc ~ '\\- Packed RBC',
+      tx_fresh_frozen_plasma ~ '\\- Fresh frozen plasma',
+      tx_platelet ~ '\\- Platelet',
+      tx_cryoprecipitate ~ '\\- Cryoprecipitate',
+      tx_nasal_package ~ '\\- Nasal Package in situ',
+      tx_endoscopic_intervention ~ '\\- Endoscopic invention'
+    ),
+    missing='no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )) |>
+  add_n('{N_nonmiss}') |>
+  modify_table_body(
+    function(x){
+      i =  which(x$label == '\\- Nose') - 1
+      j =  which(x$label == '\\- Packed RBC') - 1
+      rbind(
+            c(rep('',3), rep('**Haemorrhage sites**',2), rep('', ncol(x)-5)),
+            x[(i+1):j,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Bleeding intervention**',2), rep('', ncol(x)-5)),
+            x[(j+1):nrow(x),])
+    }
+  )  |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Dengue cases with haemorrhage (N = {nrow(bleeding |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+
+
+```
+
+\newpage
+# Liver damage
+
+```{r liver}
+#| tab.id: liver
+
+liver |>
+  unique() |>
+  inner_join(pop) |>
+  select(clin_jaundice, clin_enlargeliver, clin_enlargespleen,
+         clin_alf, clin_encephalopathy, 
+         bld_tqinr, liv_albumin, liv_bil_tot,
+         liv_ast, liv_alt,
+         tx_he, tx_tpe, tx_nac) |>
+  tbl_summary(
+    label = list(
+      clin_jaundice ~ 'Jaundice',
+      clin_enlargeliver ~ 'Liver enlargement',
+      clin_enlargespleen ~ 'Spleen enlargement',
+      clin_alf ~ 'Acute liver failure (at discharge)',
+      clin_encephalopathy ~ 'Encephalopathy (at discharge)',
+      bld_tqinr ~ 'INR (max)',
+      liv_albumin ~ 'Albumin (min)',
+      liv_bil_tot ~ 'Total bilirubin (max)',
+      liv_ast ~ 'AST (max)',
+      liv_alt ~ 'ALT (max)',
+      tx_he ~ 'Tx for haepatic coma',
+      tx_tpe ~ 'TPE',
+      tx_nac ~ 'NAC'
+    ),
+    missing='no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )
+  ) |> 
+  add_n('{N_nonmiss}') |>
+  modify_table_body(
+    function(x){
+      i =  which(x$label == 'Jaundice') - 1
+      j =  which(x$label == 'Tx for haepatic coma') - 1
+      rbind(
+            c(rep('',3), rep('**Clinical signs + symptoms**',2), rep('', ncol(x)-5)),
+            x[(i+1):j,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Intervention in liver damage**',2), rep('', ncol(x)-5)),
+            x[(j+1):nrow(x),])
+    }
+  )  |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Liver-damaged Dengue cases (N = {nrow(liver |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+
+```
+
+\newpage
+# Kidney
+
+```{r kidney}
+#| tab.id: kidney
+
+kidney |>
+  unique() |>
+  inner_join(pop) |>
+  select(clin_sbp, kid_ure, kid_cre, tx_crrt, tx_intubation) |>
+  tbl_summary(
+    label = list(
+      clin_sbp ~ 'Systolic blood pressure (min)',
+      kid_ure ~ 'BUN',
+      kid_cre ~ "Creatinine",
+      tx_crrt ~ 'CRRT',
+      tx_intubation ~ 'Intubation'
+    ),
+    missing = 'no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )
+  ) |>
+  add_n('{N_nonmiss}') |>
+  modify_table_body(
+    function(x){
+      i =  which(x$label == 'CRRT') - 1
+      rbind(
+            x[1:i,],
+            rep('', ncol(x)),
+            c(rep('',3), rep('**Intervention in renal damage**',2), rep('', ncol(x)-5)),
+            x[(i+1):nrow(x),])
+    }
+  )  |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Renal damaged Dengue cases (N = {nrow(kidney |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+```
+
+\newpage
+# Brain
+ 
+```{r brain}
+#| tab.id: brain
+
+brain |>
+  unique() |>
+  inner_join(pop) |>
+  select(-usubjid, -pop) |>
+  tbl_summary(
+    label = list(convulsion ~  "Convulsion", fnp ~ 'Focal neurological palsy'),
+    missing='no',
+    statistic = list(
+      all_categorical() ~ "{n} ({p}%)",
+      all_continuous() ~ "{median} ({p25}; {p75})"
+    )
+  ) |>
+  add_n('{N_nonmiss}') |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Brain-damaged Dengue cases (N = {nrow(brain |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+```
+
+# Heart
+
+```{r heart}
+#| tab.id: heart
+
+heart |>
+  unique() |>
+  inner_join(pop) |>
+  select(troponinI, abnormal_ecg) |>
+  tbl_summary(
+    label = list(troponinI ~ "Troponin I",
+                 abnormal_ecg ~ 'Abnormal ECG'),
+    missing = 'no',
+    statistic = list(all_categorical() ~ "{n} ({p}%)")
+  ) |>
+  add_n('{N_nonmiss}') |>
+  modify_header(stat_0 = '**Summary statistic**') |>
+  modify_caption(glue::glue('Heart-damaged Dengue cases (N = {nrow(brain |>unique() |>inner_join(pop) )})')) |>
+  modify_footnote(
+    !!!footnote
+  ) |>
+  as_flex_table() |>
+  flextable::theme_booktabs() |>
+  ftExtra::colformat_md(1) |>
+  autofit()
+
+```
