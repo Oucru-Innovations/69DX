@@ -30,7 +30,7 @@ install.package('renv')
 renv::restore()
 ```
 
-Given all datasets are in data/raw, to generate report, open in Rstudio `69DX.Rproject`
+Given all datasets are in data/raw, to generate report, open in Rstudio `69DX.Rproj`
 
 1. Open `analysis/01_import.R`, click on `Source`
 2. Open `analysis/02_create_VAR.R`, click on `Source`
